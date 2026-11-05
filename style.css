@@ -1,0 +1,24 @@
+#ecc_settings .menu_button { width: fit-content; margin: 6px 0; }
+#ecc_settings small { display: block; opacity: 0.75; margin-top: 4px; }
+
+.ecc-report { text-align: left; font-size: 0.95em; }
+.ecc-report h3 { margin: 0 0 8px; }
+.ecc-verdict { padding: 8px 12px; border-radius: 8px; font-weight: bold; margin-bottom: 6px; }
+.ecc-verdict.ecc-danger { background: rgba(220, 60, 60, 0.18); border: 1px solid rgba(220, 60, 60, 0.6); }
+.ecc-verdict.ecc-caution { background: rgba(230, 170, 40, 0.18); border: 1px solid rgba(230, 170, 40, 0.6); }
+.ecc-verdict.ecc-ok { background: rgba(60, 170, 90, 0.18); border: 1px solid rgba(60, 170, 90, 0.6); }
+.ecc-counts, .ecc-target { opacity: 0.85; margin-bottom: 10px; }
+
+.ecc-item { border-left: 4px solid var(--SmartThemeBorderColor); padding: 6px 10px; margin: 8px 0; border-radius: 4px; background: var(--black30a); }
+.ecc-item.ecc-danger { border-left-color: #dc3c3c; }
+.ecc-item.ecc-caution { border-left-color: #e6aa28; }
+.ecc-item.ecc-info { border-left-color: #4a90d9; }
+.ecc-item-head { display: flex; gap: 8px; align-items: center; }
+.ecc-badge { font-size: 0.8em; padding: 1px 6px; border-radius: 10px; background: var(--black50a); white-space: nowrap; }
+.ecc-pair { opacity: 0.85; margin: 2px 0; }
+.ecc-item ul { margin: 4px 0 4px 18px; padding: 0; }
+.ecc-item code { word-break: break-all; }
+.ecc-hint { font-size: 0.88em; opacity: 0.8; }
+.ecc-scanned { margin-top: 12px; }
+.ecc-scanned li { margin: 4px 0; }
+.ecc-note { margin-top: 12px; font-size: 0.85em; opacity: 0.7; }

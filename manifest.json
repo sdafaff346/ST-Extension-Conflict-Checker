@@ -1,0 +1,12 @@
+{
+    "display_name": "Extension Conflict Checker",
+    "loading_order": 100,
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "KKANG000",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false,
+    "minimum_client_version": "1.13.0"
+}
