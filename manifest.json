@@ -6,7 +6,7 @@
     "css": "style.css",
     "author": "KKANG000",
     "version": "1.2.0",
-    "homePage": "",
-    "auto_update": false,
+    "homePage": "https://github.com/sdafaff346/ST-Extension-Conflict-Checker",
+    "auto_update": true,
     "minimum_client_version": "1.13.0"
 }

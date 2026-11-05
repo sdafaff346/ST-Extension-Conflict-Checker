@@ -3,8 +3,10 @@
 설치하려는 확장의 GitHub 링크를 넣으면 지금 설치된 확장들과 코드를 비교해 충돌 가능성을 알려줍니다. 설치된 확장끼리 전체 검사도 됩니다.
 
 ## 설치
-1. 이 폴더(`ST-Extension-Conflict-Checker`)를 `SillyTavern/data/<사용자>/extensions/` 에 복사
-2. ST 새로고침 → 확장 패널 → "확장 충돌 검사기"
+1. SillyTavern의 확장(Extensions) 패널 → **확장 설치(Install extension)**
+2. 아래 주소를 붙여 넣고 설치
+   `https://github.com/sdafaff346/ST-Extension-Conflict-Checker`
+3. 업데이트는 확장 패널의 업데이트 버튼으로 받을 수 있어요.
 
 ## 사용
 - 패널에 링크 입력 → **링크 검사** / **설치된 확장 전체 검사**
