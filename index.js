@@ -19,6 +19,11 @@ const SELF_FOLDER = (() => {
 })();
 
 const defaultSettings = Object.freeze({
+    aiProfileId: '',
+    aiUsePreset: false,
+    aiPrompt: '',
+    aiMaxTokens: 3000,
+    aiConsent: false,
     includeDisabled: false,
     includeSystem: false,
     lastUrl: '',
@@ -332,45 +337,66 @@ function intersect(a, b) {
  */
 export function compare(A, B) {
     const out = [];
-    const push = (sev, title, items, hint) => {
-        if (items.length) out.push({ sev, title, items, hint, a: A.label, b: B.label });
+    // keys: raw strings to search in source when building snippets for the AI review
+    const push = (sev, title, items, hint, keys = items, review = true) => {
+        if (items.length) out.push({ sev, title, items, hint, keys, review, a: A.label, b: B.label, aRef: A, bRef: B });
     };
     const fa = A.fp;
     const fb = B.fp;
+    const both = (x, y) => intersect(x, y);
 
     if (fa.hash && fa.hash === fb.hash) {
-        push('danger', '같은 확장이 두 번 설치된 것 같아요', ['소스 코드가 완전히 같음'], '하나를 지우세요. 명령·설정이 전부 겹칩니다.');
+        push('danger', '같은 확장이 두 번 설치된 것 같아요', ['소스 코드가 완전히 같음'], '하나를 지우세요. 명령·설정이 전부 겹칩니다.', [], false);
     }
-    push('danger', '같은 슬래시 명령', intersect(fa.commands, fb.commands).map(x => `/${x}`), '나중에 로드된 쪽이 앞의 명령을 덮어씁니다.');
-    push('danger', '같은 매크로', intersect(fa.macros, fb.macros).map(x => `{{${x}}}`), '한쪽 매크로가 다른 쪽을 덮어씁니다.');
-    push('danger', '같은 함수 도구(Function tool) 이름', intersect(fa.tools, fb.tools), 'AI가 호출할 때 한쪽만 동작합니다.');
+    let x = both(fa.commands, fb.commands);
+    push('danger', '같은 슬래시 명령', x.map(v => `/${v}`), '나중에 로드된 쪽이 앞의 명령을 덮어씁니다.', x);
+    x = both(fa.macros, fb.macros);
+    push('danger', '같은 매크로', x.map(v => `{{${v}}}`), '한쪽 매크로가 다른 쪽을 덮어씁니다.', x);
+    push('danger', '같은 함수 도구(Function tool) 이름', both(fa.tools, fb.tools), 'AI가 호출할 때 한쪽만 동작합니다.');
     if (fa.interceptor && fa.interceptor === fb.interceptor) {
         push('danger', '같은 생성 인터셉터 함수 이름', [fa.interceptor], '전역 함수가 덮어써져 한쪽 인터셉터가 두 번 돌고 다른 쪽은 안 돕니다.');
     } else if (fa.interceptor && fb.interceptor) {
-        push('info', '둘 다 프롬프트를 가로채서 수정함', [`${fa.interceptor} / ${fb.interceptor}`], 'loading_order 순서대로 실행됩니다. 결과가 이상하면 순서를 확인하세요.');
+        push('info', '둘 다 프롬프트를 가로채서 수정함', [`${fa.interceptor} / ${fb.interceptor}`], 'loading_order 순서대로 실행됩니다. 결과가 이상하면 순서를 확인하세요.', [fa.interceptor, fb.interceptor]);
     }
-    push('danger', '같은 전역 변수(window.*)에 대입', intersect(fa.globals, fb.globals).map(x => `window.${x}`), '나중에 로드된 쪽 값만 남습니다.');
-    push('danger', '같은 extension_settings 키에 저장', intersect(fa.settingsKeys, fb.settingsKeys), '서로의 설정을 덮어써서 설정이 초기화되거나 꼬일 수 있어요.');
-    push('danger', '같은 HTML id 생성', intersect(fa.domIds, fb.domIds).map(x => `#${x}`), 'getElementById가 엉뚱한 요소를 잡아 UI가 깨질 수 있어요.');
-    push('caution', '같은 대상을 몽키패치(덮어쓰기)', intersect(fa.patches, fb.patches), '둘이 원래 함수를 각자 감싸면 순서에 따라 한쪽 기능이 사라질 수 있어요.');
-    push('caution', '같은 단축키', intersect(fa.hotkeys, fb.hotkeys), '키를 누르면 두 동작이 동시에 일어날 수 있어요.');
-    push('caution', '같은 이벤트에서 둘 다 "맨 앞/맨 뒤"를 요구', intersect(fa.firstLast, fb.firstLast), '둘 다 먼저(또는 나중에) 실행되려 해서 순서가 보장되지 않아요.');
+    x = both(fa.globals, fb.globals);
+    push('danger', '같은 전역 변수(window.*)에 대입', x.map(v => `window.${v}`), '나중에 로드된 쪽 값만 남습니다.', x);
+    push('danger', '같은 extension_settings 키에 저장', both(fa.settingsKeys, fb.settingsKeys), '서로의 설정을 덮어써서 설정이 초기화되거나 꼬일 수 있어요.');
+    x = both(fa.domIds, fb.domIds);
+    push('danger', '같은 HTML id 생성', x.map(v => `#${v}`), 'getElementById가 엉뚱한 요소를 잡아 UI가 깨질 수 있어요.', x);
+    x = both(fa.patches, fb.patches);
+    push('caution', '같은 대상을 몽키패치(덮어쓰기)', x, '둘이 원래 함수를 각자 감싸면 순서에 따라 한쪽 기능이 사라질 수 있어요.', x.map(v => v.split('.').pop()));
+    x = both(fa.hotkeys, fb.hotkeys);
+    push('caution', '같은 단축키', x, '키를 누르면 두 동작이 동시에 일어날 수 있어요.', ['keydown']);
+    x = both(fa.firstLast, fb.firstLast);
+    push('caution', '같은 이벤트에서 둘 다 "맨 앞/맨 뒤"를 요구', x, '둘 다 먼저(또는 나중에) 실행되려 해서 순서가 보장되지 않아요.', x.map(v => v.split(':')[1]));
 
     const css = [];
+    const cssKeys = [];
     for (const [sel, props] of fa.cssImportant) {
         const other = fb.cssImportant.get(sel);
         if (!other) continue;
-        const both = intersect(props, other);
-        if (both.length) css.push(`${sel} { ${both.join(', ')} }`);
+        const shared = intersect(props, other);
+        if (shared.length) {
+            css.push(`${sel} { ${shared.join(', ')} }`);
+            cssKeys.push(sel);
+        }
     }
-    push('caution', 'CSS !important 가 같은 곳에 겹침', css, '나중에 로드된 스타일이 이깁니다. 화면이 의도와 다르게 보일 수 있어요.');
+    push('caution', 'CSS !important 가 같은 곳에 겹침', css, '나중에 로드된 스타일이 이깁니다. 화면이 의도와 다르게 보일 수 있어요.', cssKeys);
 
     const sharedEvents = intersect(fa.events, fb.events);
     if (sharedEvents.length >= 4) {
-        push('info', '같은 이벤트를 많이 구독', sharedEvents, '대부분 문제 없지만, 둘 다 메시지 내용을 수정한다면 결과가 섞일 수 있어요.');
+        push('info', '같은 이벤트를 많이 구독', sharedEvents, '대부분 문제 없지만, 둘 다 메시지 내용을 수정한다면 결과가 섞일 수 있어요.',
+            sharedEvents.filter(e => MUTATING_EVENTS.has(e)), sharedEvents.some(e => MUTATING_EVENTS.has(e)));
     }
     return out;
 }
+
+// Events where handlers typically rewrite messages or prompts: worth an AI look when shared
+const MUTATING_EVENTS = new Set([
+    'MESSAGE_RECEIVED', 'MESSAGE_SENT', 'CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_EDITED',
+    'CHAT_COMPLETION_PROMPT_READY', 'GENERATE_AFTER_COMBINE_PROMPTS', 'GENERATE_BEFORE_COMBINE_PROMPTS',
+    'GENERATION_AFTER_COMMANDS', 'MESSAGE_SWIPED', 'STREAM_TOKEN_RECEIVED',
+]);
 
 function checkTargetAlone(target, installed, stVersion) {
     const out = [];
@@ -444,6 +470,7 @@ async function loadInstalled(force = false) {
                 name: e.name, type: e.type, enabled: !disabled.has(e.name), manifest,
                 label: manifest.display_name || e.name.replace(/^third-party\//, ''),
                 fp: fingerprint(manifest, files, coreIds),
+                files,
             };
         } catch (err) {
             console.warn(LOG, 'failed to scan', e.name, err);
@@ -504,6 +531,7 @@ async function loadRemote(link) {
         name: link, enabled: true, manifest, source: link,
         label: manifest.display_name || (info.repo ?? link),
         fp: fingerprint(manifest, files, await getCoreIds()),
+        files,
     };
 }
 
@@ -526,8 +554,12 @@ function renderReport(title, findings, scanned, extra = '') {
     const count = s => findings.filter(f => f.sev === s).length;
     const sevLabel = { danger: '충돌 위험', caution: '주의', info: '참고' };
 
+    findings.forEach((f, i) => { f.id = `F${i + 1}`; });
+    const reviewable = findings.filter(f => f.review && f.aRef && f.bRef);
+    lastReport = { findings };
+
     const rows = findings.map(f => `
-        <div class="ecc-item ecc-${f.sev}">
+        <div class="ecc-item ecc-${f.sev}" data-fid="${f.id}">
             <div class="ecc-item-head">
                 <span class="ecc-badge">${sevLabel[f.sev]}</span>
                 <b>${esc(f.title)}</b>
@@ -549,12 +581,230 @@ function renderReport(title, findings, scanned, extra = '') {
         ${verdict}
         <div class="ecc-counts">위험 ${count('danger')} · 주의 ${count('caution')} · 참고 ${count('info')} · 검사한 확장 ${scanned.length}개</div>
         ${extra}
+        ${reviewable.length ? `<div class="ecc-ai-box">
+            <div class="menu_button menu_button_icon ecc-ai-btn"><i class="fa-solid fa-robot"></i><span>AI로 진짜 충돌인지 검토 (${Math.min(reviewable.length, AI_MAX_FINDINGS)}건)</span></div>
+            <small>걸린 부분의 코드 조각만 ${esc(aiTargetLabel())}로 보내요.</small>
+            <div class="ecc-ai-out"></div>
+        </div>` : ''}
         ${rows || ''}
         <details class="ecc-scanned"><summary>검사한 확장 목록</summary>
             <ul>${scanned.map(e => `<li><b>${esc(e.label)}</b> <small>${esc(e.manifest.version || '')}${e.enabled === false ? ' (꺼짐)' : ''}</small><br><small>${esc(summarizeFp(e.fp))}</small></li>`).join('')}</ul>
         </details>
         <div class="ecc-note">코드를 정적으로 읽어서 찾은 "가능성"이에요. 압축(번들)된 확장은 일부 항목을 못 찾을 수 있고, 표시돼도 실제로는 문제없을 수 있어요.</div>
     </div>`;
+}
+
+// ---------------------------------------------------------------- AI review
+
+const AI_MAX_FINDINGS = 15;
+const SNIPPET_CHARS = 2200;
+const TOTAL_PROMPT_CHARS = 34000;
+let lastReport = null;
+let aiBusy = false;
+
+// English names for finding types (the model reads these)
+const TITLE_EN = {
+    '같은 슬래시 명령': 'Same slash command name registered by both',
+    '같은 매크로': 'Same macro name registered by both',
+    '같은 함수 도구(Function tool) 이름': 'Same function-calling tool name',
+    '같은 생성 인터셉터 함수 이름': 'Same generate_interceptor global function name',
+    '둘 다 프롬프트를 가로채서 수정함': 'Both use a generate_interceptor that edits the prompt',
+    '같은 전역 변수(window.*)에 대입': 'Both assign the same window/globalThis property',
+    '같은 extension_settings 키에 저장': 'Both write the same extension_settings key',
+    '같은 HTML id 생성': 'Both create an element with the same HTML id',
+    '같은 대상을 몽키패치(덮어쓰기)': 'Both monkey-patch the same shared function',
+    '같은 단축키': 'Both bind the same keyboard shortcut',
+    '같은 이벤트에서 둘 다 "맨 앞/맨 뒤"를 요구': 'Both call eventSource.makeFirst/makeLast on the same event',
+    'CSS !important 가 같은 곳에 겹침': 'Both set the same CSS property with !important on the same selector',
+    '같은 이벤트를 많이 구독': 'Both subscribe to events where handlers usually rewrite messages or prompts',
+};
+
+const VERDICT = {
+    real: { text: '충돌 확실', cls: 'ecc-danger' },
+    likely: { text: '충돌 가능성 높음', cls: 'ecc-caution' },
+    unlikely: { text: '문제 적음', cls: 'ecc-info' },
+    false_positive: { text: '오탐 (괜찮음)', cls: 'ecc-ok' },
+};
+
+function aiTargetLabel() {
+    const id = getSettings().aiProfileId;
+    if (!id) return '현재 연결된 API';
+    const p = SillyTavern.getContext().extensionSettings.connectionManager?.profiles?.find(x => x.id === id);
+    return p ? `"${p.name}" 프로필` : '현재 연결된 API';
+}
+
+/**
+ * Sends ONLY the given system + user messages.
+ * With a profile: the profile's API, model, key and proxy are used; the profile's preset
+ * (prompt order, samplers) and instruct template are skipped unless usePreset is on.
+ * Without a profile: falls back to the current connection via generateRaw (no chat, no character card).
+ */
+async function callLLM(system, user, maxTokens, profileId, usePreset = false) {
+    const ctx = SillyTavern.getContext();
+    if (profileId && ctx.ConnectionManagerRequestService) {
+        const res = await ctx.ConnectionManagerRequestService.sendRequest(
+            profileId,
+            [{ role: 'system', content: system }, { role: 'user', content: user }],
+            maxTokens,
+            { stream: false, extractData: true, includePreset: !!usePreset, includeInstruct: !!usePreset },
+        );
+        return typeof res === 'string' ? res : (res?.content ?? '');
+    }
+    return await ctx.generateRaw({ systemPrompt: system, prompt: user, responseLength: maxTokens });
+}
+
+function escRe(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Code around the first place `key` appears in an extension's files. */
+export function snippetFor(ext, key) {
+    if (!ext?.files || !key) return '';
+    const quoted = new RegExp(`(['"\`])${escRe(key)}\\1`);
+    for (const useQuoted of [true, false]) {
+        for (const f of ext.files) {
+            let idx = -1;
+            if (useQuoted) {
+                const m = quoted.exec(f.text);
+                idx = m ? m.index : -1;
+            } else {
+                idx = f.text.indexOf(key);
+            }
+            if (idx < 0) continue;
+            const lineNo = f.text.slice(0, idx).split('\n').length;
+            const lineStart = f.text.lastIndexOf('\n', idx) + 1;
+            const lineEnd = f.text.indexOf('\n', idx);
+            const lineLen = (lineEnd < 0 ? f.text.length : lineEnd) - lineStart;
+            let body;
+            if (lineLen > 400) {
+                // Minified/bundled code: take a character window instead of lines
+                body = f.text.slice(Math.max(0, idx - 700), idx + 700);
+            } else {
+                const lines = f.text.split('\n');
+                body = lines.slice(Math.max(0, lineNo - 11), lineNo + 10).map(l => l.length > 220 ? `${l.slice(0, 220)}…` : l).join('\n');
+            }
+            return `// ${f.path}:${lineNo}\n${body}`.slice(0, SNIPPET_CHARS);
+        }
+    }
+    return '';
+}
+
+// Editable part of the review instructions (the user can replace it in settings)
+export const DEFAULT_REVIEW_PROMPT = [
+    'You are an expert reviewer of SillyTavern browser extensions (ES modules that run in the same page and share window, the DOM, eventSource and extension_settings).',
+    'A regex-based static scanner flagged possible conflicts between pairs of extensions. Read the code excerpts and decide whether each one is a real runtime conflict when both extensions are enabled.',
+    'Be concrete and skeptical: a shared name only matters if both sides really register/overwrite it in a way that breaks the other. Reading a shared value, or namespacing it, is not a conflict.',
+    'The end user is a non-developer who reads Korean. Write every "title", "explanation", "fix" and "summary" value in Korean, 1-3 short plain sentences, no code unless essential.',
+    'Use "extra" only for conflicts the scanner missed that are clearly visible in the excerpts (for example both rewrite message text in the same event, or both inject prompts at the same depth). Otherwise return an empty array.',
+].join('\n');
+
+// Fixed part: the parser depends on it, so it is always appended
+const REVIEW_FORMAT = [
+    'Output format (required): return ONLY a JSON object, no markdown fences, with this shape:',
+    '{"findings":[{"id":"F1","verdict":"real|likely|unlikely|false_positive","explanation":"...","fix":"..."}],',
+    ' "extra":[{"extensions":"A <-> B","title":"...","explanation":"...","fix":"..."}],',
+    ' "summary":"..."}',
+    'Include one entry in "findings" for every finding id you were given.',
+].join('\n');
+
+export function buildReviewPrompt(findings, customPrompt = '') {
+    const system = `${String(customPrompt || '').trim() || DEFAULT_REVIEW_PROMPT}\n\n${REVIEW_FORMAT}`;
+
+    let user = 'Findings to review:\n';
+    for (const f of findings) {
+        const head = `\n### ${f.id} [${f.sev}] ${TITLE_EN[f.title] || f.title}\nExtension A: ${f.a}\nExtension B: ${f.b}\nFlagged items: ${f.items.slice(0, 8).join(', ')}\n`;
+        const keys = (f.keys || []).slice(0, 2);
+        let code = '';
+        for (const k of keys) {
+            const sa = snippetFor(f.aRef, k);
+            const sb = snippetFor(f.bRef, k);
+            if (sa) code += `--- A excerpt (${k}) ---\n${sa}\n`;
+            if (sb) code += `--- B excerpt (${k}) ---\n${sb}\n`;
+        }
+        if (!code) code = '(no excerpt found; judge from the description only)\n';
+        if (user.length + head.length + code.length > TOTAL_PROMPT_CHARS) {
+            user += `\n### ${f.id}: skipped (prompt size limit). Return verdict "likely" with explanation noting it was not reviewed.\n`;
+            continue;
+        }
+        user += head + code;
+    }
+    return { system, user };
+}
+
+export function parseJsonLoose(text) {
+    const t = String(text || '').replace(/```(?:json)?/gi, '');
+    const a = t.indexOf('{');
+    const b = t.lastIndexOf('}');
+    if (a < 0 || b <= a) throw new Error('AI 응답에서 JSON을 찾지 못했어요.');
+    return JSON.parse(t.slice(a, b + 1));
+}
+
+async function runAiReview(button) {
+    if (aiBusy || !lastReport) return;
+    const s = getSettings();
+    const { Popup, POPUP_RESULT, saveSettingsDebounced } = SillyTavern.getContext();
+    if (!s.aiConsent) {
+        const ok = await Popup.show.confirm('AI 검토', `걸린 부분 주변의 확장 코드 조각(최대 약 3만 자)이 ${aiTargetLabel()}로 전송되고, 요청 1번만큼 비용이 들어요. 계속할까요?`);
+        if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
+        s.aiConsent = true;
+        saveSettingsDebounced();
+    }
+
+    const findings = lastReport.findings.filter(f => f.review && f.aRef && f.bRef).slice(0, AI_MAX_FINDINGS);
+    const box = button.closest('.ecc-ai-box');
+    const out = box?.querySelector('.ecc-ai-out');
+    const label = button.querySelector('span');
+    const original = label?.textContent;
+    aiBusy = true;
+    button.classList.add('disabled');
+    if (label) label.textContent = 'AI가 코드를 읽는 중…';
+
+    try {
+        const { system, user } = buildReviewPrompt(findings, s.aiPrompt);
+        const raw = await callLLM(system, user, s.aiMaxTokens || 3000, s.aiProfileId, s.aiUsePreset);
+        const result = parseJsonLoose(raw);
+        const scope = button.closest('.ecc-report') || document;
+
+        let real = 0;
+        for (const r of result.findings || []) {
+            const v = VERDICT[r.verdict] || VERDICT.likely;
+            if (r.verdict === 'real' || r.verdict === 'likely') real++;
+            const item = scope.querySelector(`.ecc-item[data-fid="${CSS.escape(String(r.id))}"]`);
+            if (!item) continue;
+            item.querySelector('.ecc-ai')?.remove();
+            item.insertAdjacentHTML('beforeend', `<div class="ecc-ai"><span class="ecc-badge ${v.cls}"><i class="fa-solid fa-robot"></i> ${v.text}</span>
+                <div>${esc(r.explanation)}</div>${r.fix ? `<div class="ecc-ai-fix">해결: ${esc(r.fix)}</div>` : ''}</div>`);
+            if (r.verdict === 'false_positive') item.classList.add('ecc-dim');
+        }
+        const extra = (result.extra || []).map(e => `<div class="ecc-item ecc-caution"><div class="ecc-item-head"><span class="ecc-badge">AI 발견</span><b>${esc(e.title)}</b></div>
+            <div class="ecc-pair">${esc(e.extensions)}</div><div>${esc(e.explanation)}</div>${e.fix ? `<div class="ecc-ai-fix">해결: ${esc(e.fix)}</div>` : ''}</div>`).join('');
+        if (out) {
+            out.innerHTML = `<div class="ecc-ai-summary"><b>AI 결론</b> · 실제 문제 가능성 ${real}건 / 검토 ${findings.length}건<br>${esc(result.summary || '')}</div>${extra}`;
+        }
+        if (label) label.textContent = 'AI 검토 완료 (다시 검토)';
+    } catch (err) {
+        console.error(LOG, 'AI review failed', err);
+        const msg = err?.cause?.message || err?.message || String(err);
+        if (out) out.innerHTML = `<div class="ecc-ai-summary ecc-danger">AI 검토 실패: ${esc(msg)}</div>`;
+        if (label) label.textContent = original;
+        toastr.error(msg, 'AI 검토 실패');
+    } finally {
+        aiBusy = false;
+        button.classList.remove('disabled');
+    }
+}
+
+function fillProfileSelect(select, currentId) {
+    const ctx = SillyTavern.getContext();
+    let profiles = [];
+    try {
+        profiles = ctx.ConnectionManagerRequestService?.getSupportedProfiles?.() ?? [];
+    } catch {
+        profiles = []; // Connection Manager disabled
+    }
+    select.innerHTML = '<option value="">현재 연결 사용 (프로필 없음)</option>'
+        + profiles.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+    select.value = profiles.some(p => p.id === currentId) ? currentId : '';
 }
 
 async function showReport(html) {
@@ -651,6 +901,18 @@ function createSettingsUI() {
                 <div id="ecc_check_installed" class="menu_button menu_button_icon"><i class="fa-solid fa-puzzle-piece"></i><span>설치된 확장 전체 검사</span></div>
                 <label class="checkbox_label"><input id="ecc_include_disabled" type="checkbox" /><span>꺼진 확장도 포함</span></label>
                 <label class="checkbox_label"><input id="ecc_include_system" type="checkbox" /><span>ST 기본 내장 확장도 포함</span></label>
+                <label for="ecc_ai_profile">AI 검토에 쓸 연결</label>
+                <select id="ecc_ai_profile" class="text_pole"></select>
+                <small>프로필을 고르면 그 프로필의 API·모델·키·프록시로, 아래 프롬프트만 보내요(프리셋·캐릭터·채팅은 안 들어감). 프로필은 ST의 Connection Profiles에서 만들어요.</small>
+                <label class="checkbox_label"><input id="ecc_ai_preset" type="checkbox" /><span>프로필에 묶인 프리셋 설정(온도 등)도 적용</span></label>
+                <label for="ecc_ai_max">최대 응답 토큰</label>
+                <input id="ecc_ai_max" class="text_pole" type="number" min="500" max="16000" step="100" />
+                <label for="ecc_ai_prompt">AI 검토 프롬프트 (비우면 기본값)</label>
+                <textarea id="ecc_ai_prompt" class="text_pole" rows="6"></textarea>
+                <div class="flex-container">
+                    <div id="ecc_ai_prompt_default" class="menu_button menu_button_icon"><i class="fa-solid fa-rotate-left"></i><span>기본 프롬프트 불러오기</span></div>
+                </div>
+                <small>출력 형식(JSON) 안내는 결과를 읽기 위해 항상 뒤에 자동으로 붙어요. 모델이 읽는 글이라 영어를 권장해요.</small>
                 <small>슬래시 명령: <code>/extconflict</code> (전체 검사), <code>/extconflict 링크</code> (링크 비교)</small>
             </div>
         </div>
@@ -673,6 +935,31 @@ function createSettingsUI() {
         checkLink(s.lastUrl);
     });
     document.getElementById('ecc_check_installed').addEventListener('click', () => checkInstalled());
+
+    const sel = document.getElementById('ecc_ai_profile');
+    fillProfileSelect(sel, s.aiProfileId);
+    sel.addEventListener('focus', () => fillProfileSelect(sel, s.aiProfileId));
+    sel.addEventListener('change', () => { s.aiProfileId = sel.value; saveSettingsDebounced(); });
+
+    const preset = document.getElementById('ecc_ai_preset');
+    preset.checked = !!s.aiUsePreset;
+    preset.addEventListener('change', () => { s.aiUsePreset = preset.checked; saveSettingsDebounced(); });
+    const max = document.getElementById('ecc_ai_max');
+    max.value = s.aiMaxTokens;
+    max.addEventListener('change', () => {
+        s.aiMaxTokens = Math.min(16000, Math.max(500, parseInt(max.value) || 3000));
+        max.value = s.aiMaxTokens;
+        saveSettingsDebounced();
+    });
+    const prompt = document.getElementById('ecc_ai_prompt');
+    prompt.value = s.aiPrompt;
+    prompt.placeholder = DEFAULT_REVIEW_PROMPT;
+    prompt.addEventListener('input', () => { s.aiPrompt = prompt.value; saveSettingsDebounced(); });
+    document.getElementById('ecc_ai_prompt_default').addEventListener('click', () => {
+        prompt.value = DEFAULT_REVIEW_PROMPT;
+        s.aiPrompt = '';
+        saveSettingsDebounced();
+    });
 }
 
 function registerCommand() {
@@ -704,6 +991,17 @@ if (globalThis.SillyTavern?.getContext) {
             getSettings();
             createSettingsUI();
             registerCommand();
+            // The AI button lives inside report popups: one delegated handler
+            document.addEventListener('click', (e) => {
+                const btn = e.target instanceof Element ? e.target.closest('.ecc-ai-btn') : null;
+                if (btn) runAiReview(btn);
+            });
+            for (const ev of [event_types.CONNECTION_PROFILE_CREATED, event_types.CONNECTION_PROFILE_DELETED, event_types.CONNECTION_PROFILE_UPDATED]) {
+                if (ev) eventSource.on(ev, () => {
+                    const sel = document.getElementById('ecc_ai_profile');
+                    if (sel) fillProfileSelect(sel, getSettings().aiProfileId);
+                });
+            }
             console.log(LOG, 'ready', SELF_FOLDER);
         } catch (err) {
             console.error(LOG, 'init failed', err);
