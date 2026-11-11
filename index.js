@@ -399,7 +399,7 @@ export function compare(A, B) {
     x = both(fa.domIds, fb.domIds);
     push('danger', '같은 HTML id 생성', x.map(v => `#${v}`), 'getElementById가 엉뚱한 요소를 잡아 UI가 깨질 수 있어요.', x);
     x = both(fa.patches, fb.patches);
-    push('caution', '같은 대상을 몽키패치(덮어쓰기)', x, '둘 다 같은 함수를 감싸요. 각자 원래 함수를 이어서 부르면 괜찮지만, 그러지 않으면 한쪽 기능이 사라져요. AI 검토로 확인해 보세요.', x.map(v => v.split('.').pop()));
+    push('caution', '같은 대상을 몽키패치(덮어쓰기)', x, '여러 확장이 같은 함수를 감싸요. 각자 원래 함수를 이어서 부르면 괜찮지만, 그러지 않으면 한쪽 기능이 사라져요. AI 검토로 확인해 보세요.', x.map(v => v.split('.').pop()));
     x = both(fa.hotkeys, fb.hotkeys);
     push('caution', '같은 단축키', x, '키를 누르면 두 동작이 동시에 일어날 수 있어요.', ['keydown']);
     x = both(fa.firstLast, fb.firstLast);
@@ -432,6 +432,29 @@ const MUTATING_EVENTS = new Set([
     'CHAT_COMPLETION_PROMPT_READY', 'GENERATE_AFTER_COMBINE_PROMPTS', 'GENERATE_BEFORE_COMBINE_PROMPTS',
     'GENERATION_AFTER_COMMANDS', 'MESSAGE_SWIPED', 'STREAM_TOKEN_RECEIVED',
 ]);
+
+/**
+ * Pairwise findings with the same title and items (e.g. three extensions all patching fetch)
+ * become one finding that lists every extension involved. Exported for testing.
+ */
+export function mergeFindings(findings) {
+    const groups = new Map();
+    for (const f of findings) {
+        const key = `${f.sev}|${f.title}|${[...f.items].sort().join(',')}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(f);
+    }
+    const out = [];
+    for (const list of groups.values()) {
+        if (list.length === 1 || !list[0].b) {
+            out.push(...list);
+            continue;
+        }
+        const names = [...new Set(list.flatMap(f => [f.a, f.b]))];
+        out.push({ ...list[0], a: names.join(' · '), b: '', group: names.length });
+    }
+    return out;
+}
 
 function checkTargetAlone(target, installed, stVersion) {
     const out = [];
@@ -593,16 +616,19 @@ function renderReport(title, findings, scanned, extra = '') {
     const reviewable = findings.filter(f => f.review && f.aRef && f.bRef);
     lastReport = { findings };
 
-    const rows = findings.map(f => `
+    const row = f => `
         <div class="ecc-item ecc-${f.sev}" data-fid="${f.id}">
             <div class="ecc-item-head">
                 <span class="ecc-badge">${sevLabel[f.sev]}</span>
                 <b>${esc(f.title)}</b>
             </div>
-            <div class="ecc-pair">${esc(f.a)}${f.b ? ` <i class="fa-solid fa-arrows-left-right"></i> ${esc(f.b)}` : ''}</div>
+            <div class="ecc-pair">${f.group ? `<small>확장 ${f.group}개:</small> ` : ''}${esc(f.a)}${f.b ? ` <i class="fa-solid fa-arrows-left-right"></i> ${esc(f.b)}` : ''}</div>
             <ul>${f.items.slice(0, 12).map(i => `<li><code>${esc(i)}</code></li>`).join('')}${f.items.length > 12 ? `<li>…외 ${f.items.length - 12}개</li>` : ''}</ul>
             <div class="ecc-hint">${esc(f.hint)}</div>
-        </div>`).join('');
+        </div>`;
+    const main = findings.filter(f => f.sev !== 'info').map(row).join('');
+    const infos = findings.filter(f => f.sev === 'info');
+    const rows = main + (infos.length ? `<details class="ecc-info-group"><summary>참고 ${infos.length}건 보기 <small>(대부분 문제없는 항목)</small></summary>${infos.map(row).join('')}</details>` : '');
 
     const verdict = count('danger')
         ? `<div class="ecc-verdict ecc-danger">충돌 위험 ${count('danger')}건이 있어요</div>`
@@ -675,6 +701,22 @@ function aiTargetLabel() {
  * (prompt order, samplers) and instruct template are skipped unless usePreset is on.
  * Without a profile: falls back to the current connection via generateRaw (no chat, no character card).
  */
+/**
+ * Without a preset, SillyTavern does not send Vertex AI's auth mode with profile requests, so the
+ * server falls back to Express (API key) mode and Google rejects service-account setups with
+ * "API keys are not supported by this API". Fill those fields from the current settings.
+ */
+function profileOverrides(profileId) {
+    const ctx = SillyTavern.getContext();
+    const cc = ctx.chatCompletionSettings || {};
+    const out = {};
+    if (cc.vertexai_auth_mode) out.vertexai_auth_mode = cc.vertexai_auth_mode;
+    if (cc.vertexai_express_project_id) out.vertexai_express_project_id = cc.vertexai_express_project_id;
+    const profile = ctx.extensionSettings.connectionManager?.profiles?.find(p => p.id === profileId);
+    if (profile && !profile['api-url'] && cc.vertexai_region) out.vertexai_region = cc.vertexai_region;
+    return out;
+}
+
 async function callLLM(system, user, maxTokens, profileId, usePreset = false) {
     const ctx = SillyTavern.getContext();
     if (profileId && ctx.ConnectionManagerRequestService) {
@@ -683,6 +725,7 @@ async function callLLM(system, user, maxTokens, profileId, usePreset = false) {
             [{ role: 'system', content: system }, { role: 'user', content: user }],
             maxTokens,
             { stream: false, extractData: true, includePreset: !!usePreset, includeInstruct: !!usePreset },
+            profileOverrides(profileId),
         );
         return typeof res === 'string' ? res : (res?.content ?? '');
     }
@@ -919,23 +962,41 @@ async function showReport(html) {
 
 // ---------------------------------------------------------------- actions
 
+let checking = false;
+
+/**
+ * Shows a loading toast only while scanning. The toast has no stop button: SillyTavern's default
+ * stop action would cancel the user's text generation, not this scan.
+ */
 async function withLoader(message, fn) {
     const { loader } = SillyTavern.getContext();
-    const handle = loader?.show ? loader.show({ message, blocking: false }) : null;
+    let handle = null;
+    try {
+        handle = loader?.show ? loader.show({ message, blocking: false, toastMode: loader.ToastMode?.STATIC ?? 'static' }) : null;
+    } catch {
+        handle = null;
+    }
     try {
         return await fn();
     } finally {
-        await handle?.hide?.();
+        try {
+            await handle?.hide?.();
+        } catch { /* already gone */ }
     }
 }
 
 async function checkLink(link, { silent = false } = {}) {
+    if (checking) {
+        toastr.info('이미 검사 중이에요.');
+        return '';
+    }
     if (!link) {
         toastr.warning('검사할 확장의 GitHub 링크를 넣어 주세요.');
         return '';
     }
+    checking = true;
     try {
-        return await withLoader('확장 코드를 읽는 중…', async () => {
+        const result = await withLoader('확장 코드를 읽는 중…', async () => {
             const [target, installedAll, stVersion] = await Promise.all([loadRemote(link), loadInstalled(true), getStVersion()]);
             const installed = filterInstalled(installedAll);
             const findings = [...checkTargetAlone(target, installedAll, stVersion)];
@@ -950,19 +1011,28 @@ async function checkLink(link, { silent = false } = {}) {
             }
             const extra = `<div class="ecc-target">대상: <b>${esc(target.label)}</b> ${esc(target.manifest.version || '')}<br><small>${esc(summarizeFp(target.fp))}</small></div>`;
             const html = renderReport('새 확장 ↔ 설치된 확장 비교', findings, [target, ...installed], extra);
-            if (!silent) await showReport(html);
-            return summaryText(findings);
+            return { html, text: summaryText(findings) };
         });
+        // Close the loading toast first, then show the result
+        if (!silent) await showReport(result.html);
+        return result.text;
     } catch (err) {
         console.error(LOG, err);
         toastr.error(err.message || String(err), '충돌 검사 실패');
         return `error: ${err.message}`;
+    } finally {
+        checking = false;
     }
 }
 
 async function checkInstalled({ silent = false } = {}) {
+    if (checking) {
+        toastr.info('이미 검사 중이에요.');
+        return '';
+    }
+    checking = true;
     try {
-        return await withLoader('설치된 확장을 읽는 중…', async () => {
+        const result = await withLoader('설치된 확장을 읽는 중…', async () => {
             const installed = filterInstalled(await loadInstalled(true));
             const findings = [];
             for (let i = 0; i < installed.length; i++) {
@@ -970,14 +1040,18 @@ async function checkInstalled({ silent = false } = {}) {
                     findings.push(...compare(installed[i], installed[j]));
                 }
             }
-            const html = renderReport('설치된 확장끼리 충돌 검사', findings, installed);
-            if (!silent) await showReport(html);
-            return summaryText(findings);
+            const html = renderReport('설치된 확장끼리 충돌 검사', mergeFindings(findings), installed);
+            return { html, text: summaryText(findings) };
         });
+        // Close the loading toast first, then show the result
+        if (!silent) await showReport(result.html);
+        return result.text;
     } catch (err) {
         console.error(LOG, err);
         toastr.error(err.message || String(err), '충돌 검사 실패');
         return `error: ${err.message}`;
+    } finally {
+        checking = false;
     }
 }
 

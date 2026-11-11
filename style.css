@@ -40,3 +40,7 @@
 #ecc_settings select { width: 100%; }
 
 .ecc-raw { white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; font-size: 0.8em; background: var(--black30a); padding: 6px; border-radius: 6px; }
+
+.ecc-info-group { margin-top: 10px; }
+.ecc-info-group > summary { cursor: pointer; padding: 6px 2px; opacity: 0.85; }
+.ecc-info-group > summary small { opacity: 0.7; }

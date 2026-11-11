@@ -5,7 +5,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "KKANG000",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "homePage": "https://github.com/sdafaff346/ST-Extension-Conflict-Checker",
     "auto_update": true,
     "minimum_client_version": "1.13.0"
