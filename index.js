@@ -22,7 +22,7 @@ const defaultSettings = Object.freeze({
     aiProfileId: '',
     aiUsePreset: false,
     aiPrompt: '',
-    aiMaxTokens: 3000,
+    aiMaxTokens: 8000,
     aiConsent: false,
     includeDisabled: false,
     includeSystem: false,
@@ -45,6 +45,8 @@ function getSettings() {
     if (!extensionSettings[MODULE]) {
         extensionSettings[MODULE] = structuredClone(defaultSettings);
     }
+    // v1.2 default was too small for thinking models
+    if (extensionSettings[MODULE].aiMaxTokens === 3000) extensionSettings[MODULE].aiMaxTokens = 8000;
     for (const key of Object.keys(defaultSettings)) {
         if (!Object.hasOwn(extensionSettings[MODULE], key)) {
             extensionSettings[MODULE][key] = defaultSettings[key];
@@ -164,10 +166,34 @@ function findLocalDeps(fromRel, text) {
 
 // ---------------------------------------------------------------- fingerprint
 
-function stripJsComments(text) {
-    // Light comment removal; keeps strings intact well enough for regex scanning
-    return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:\\'"`])\/\/[^\n]*/g, '$1');
+/**
+ * Light comment removal for readable source. Bundled/minified files are left untouched:
+ * there "//" and "/*" appear inside strings and regexes on one huge line, and stripping
+ * would delete most of the code. Exported for testing.
+ */
+export function stripJsComments(text) {
+    if (isMinified(text)) return text;
+    return text
+        .split('\n')
+        .map(line => (/^\s*\/\//.test(line) ? '' : line.replace(/(^|[\s;{}),])\/\/\s[^'"`]*$/, '$1')))
+        .join('\n')
+        .replace(/^\s*\/\*[\s\S]*?\*\/\s*$/gm, ' ');
 }
+
+function isMinified(text) {
+    const lines = text.split('\n');
+    const long = lines.filter(l => l.length > 400).length;
+    return long > 0 && (long / lines.length > 0.05 || text.length / lines.length > 300);
+}
+
+// Globals that bundles routinely set for libraries or iframes; sharing them is not a conflict
+const IGNORED_GLOBALS = new Set([
+    '$', 'jQuery', '_', 'name', 'onload', 'onerror', 'onmessage', 'location', 'regeneratorRuntime', 'Vue', 'React', 'ReactDOM',
+    'YAML', 'Buffer', 'process', 'global', 'module', 'exports', 'define', 'require', 'Popper', 'DOMPurify', 'moment', 'hljs',
+    'showdown', 'toastr', 'lodash', 'Fuse', 'localforage', 'Handlebars', 'Readability', 'SillyTavern', '__VUE_OPTIONS_API__',
+    '__VUE_PROD_DEVTOOLS__', '__VUE_PROD_HYDRATION_MISMATCH_DETAILS__', 'MonacoEnvironment', 'webpackJsonp', 'dataLayer',
+    'parent', 'top', 'self', 'opener', 'frames', 'window', 'document', 'console',
+]);
 
 function collectConstants(text) {
     const map = new Map();
@@ -221,10 +247,13 @@ export function fingerprint(manifest, files, coreIds = new Set()) {
         for (const re of [/registerSlashCommand\(\s*(['"`])([\w-]+)\1/g, /SlashCommandParser\.addCommand\(\s*(['"`])([\w-]+)\1/g]) {
             while ((m = re.exec(text))) fp.commands.add(m[2].toLowerCase());
         }
-        const reFromProps = /SlashCommand\.fromProps\(\s*\{/g;
+        // Works for readable and bundled code (where SlashCommand is renamed, e.g. "Qt.fromProps({name:`x`,callback:...")
+        const reFromProps = /(?:SlashCommand\.fromProps|addCommandObject\(\s*(?:new\s+)?[\w$.]+(?:\.fromProps)?)\(\s*\{/g;
         while ((m = reFromProps.exec(text))) {
             const win = text.slice(m.index, m.index + 1500);
-            const nm = win.match(/\bname\s*:\s*((['"`])[\w-]+\2|[A-Za-z_$][\w$]*)/);
+            // Argument definitions also use fromProps({name:...}); a command has a callback
+            if (!/\bcallback\s*:/.test(win.slice(0, 900))) continue;
+            const nm = win.match(/\{\s*(?:[\w$]+\s*:[^,]{0,80},\s*)?name\s*:\s*((['"`])[\w-]+\2|[A-Za-z_$][\w$]*)/) || win.match(/\bname\s*:\s*((['"`])[\w-]+\2|[A-Za-z_$][\w$]*)/);
             const name = nm ? resolveToken(nm[1], consts) : null;
             if (name) fp.commands.add(name.toLowerCase());
             const al = win.match(/\baliases\s*:\s*\[([^\]]*)\]/);
@@ -248,10 +277,13 @@ export function fingerprint(manifest, files, coreIds = new Set()) {
         const reGlobal = /(?:globalThis|window|self)\.([A-Za-z_$][\w$]*)\s*(?:\?\?|\|\|)?=(?!=)/g;
         while ((m = reGlobal.exec(text))) {
             if (m[1] === 'fetch') fp.patches.add('window.fetch');
-            else fp.globals.add(m[1]);
+            else if (!IGNORED_GLOBALS.has(m[1]) && m[1].length > 2 && !m[1].startsWith('webpackChunk')) fp.globals.add(m[1]);
         }
         const reGlobal2 = /(?:globalThis|window)\[\s*(['"`])([\w$]+)\1\s*\]\s*=(?!=)|Object\.defineProperty\(\s*(?:globalThis|window)\s*,\s*(['"`])([\w$]+)\3/g;
-        while ((m = reGlobal2.exec(text))) fp.globals.add(m[2] || m[4]);
+        while ((m = reGlobal2.exec(text))) {
+            const g = m[2] || m[4];
+            if (!IGNORED_GLOBALS.has(g) && g.length > 2 && !g.startsWith('webpackChunk')) fp.globals.add(g);
+        }
 
         // extension_settings keys that this extension writes
         const reSet = /(?:extension_settings|extensionSettings)(?:\[\s*([^\]\n]+?)\s*\]|\.([A-Za-z_$][\w$]*))\s*(?:\?\?|\|\|)?=(?!=)/g;
@@ -346,7 +378,10 @@ export function compare(A, B) {
     const both = (x, y) => intersect(x, y);
 
     if (fa.hash && fa.hash === fb.hash) {
-        push('danger', '같은 확장이 두 번 설치된 것 같아요', ['소스 코드가 완전히 같음'], '하나를 지우세요. 명령·설정이 전부 겹칩니다.', [], false);
+        // Everything overlaps by definition; one finding says it all
+        const n = fa.commands.size;
+        push('danger', '같은 확장이 두 번 설치된 것 같아요', [`소스 코드가 완전히 같음${n ? ` (슬래시 명령 ${n}개 등 전부 겹침)` : ''}`], '하나를 지우세요. 명령·설정이 전부 겹칩니다.', [], false);
+        return out;
     }
     let x = both(fa.commands, fb.commands);
     push('danger', '같은 슬래시 명령', x.map(v => `/${v}`), '나중에 로드된 쪽이 앞의 명령을 덮어씁니다.', x);
@@ -364,7 +399,7 @@ export function compare(A, B) {
     x = both(fa.domIds, fb.domIds);
     push('danger', '같은 HTML id 생성', x.map(v => `#${v}`), 'getElementById가 엉뚱한 요소를 잡아 UI가 깨질 수 있어요.', x);
     x = both(fa.patches, fb.patches);
-    push('caution', '같은 대상을 몽키패치(덮어쓰기)', x, '둘이 원래 함수를 각자 감싸면 순서에 따라 한쪽 기능이 사라질 수 있어요.', x.map(v => v.split('.').pop()));
+    push('caution', '같은 대상을 몽키패치(덮어쓰기)', x, '둘 다 같은 함수를 감싸요. 각자 원래 함수를 이어서 부르면 괜찮지만, 그러지 않으면 한쪽 기능이 사라져요. AI 검토로 확인해 보세요.', x.map(v => v.split('.').pop()));
     x = both(fa.hotkeys, fb.hotkeys);
     push('caution', '같은 단축키', x, '키를 누르면 두 동작이 동시에 일어날 수 있어요.', ['keydown']);
     x = both(fa.firstLast, fb.firstLast);
@@ -601,6 +636,7 @@ const SNIPPET_CHARS = 2200;
 const TOTAL_PROMPT_CHARS = 34000;
 let lastReport = null;
 let aiBusy = false;
+let lastRaw = '';
 
 // English names for finding types (the model reads these)
 const TITLE_EN = {
@@ -694,7 +730,7 @@ export const DEFAULT_REVIEW_PROMPT = [
     'You are an expert reviewer of SillyTavern browser extensions (ES modules that run in the same page and share window, the DOM, eventSource and extension_settings).',
     'A regex-based static scanner flagged possible conflicts between pairs of extensions. Read the code excerpts and decide whether each one is a real runtime conflict when both extensions are enabled.',
     'Be concrete and skeptical: a shared name only matters if both sides really register/overwrite it in a way that breaks the other. Reading a shared value, or namespacing it, is not a conflict.',
-    'The end user is a non-developer who reads Korean. Write every "title", "explanation", "fix" and "summary" value in Korean, 1-3 short plain sentences, no code unless essential.',
+    'The end user is a non-developer who reads Korean. Write every "title", "explanation", "fix" and "summary" value in Korean, at most 2 short plain sentences each, no code unless essential.',
     'Use "extra" only for conflicts the scanner missed that are clearly visible in the excerpts (for example both rewrite message text in the same event, or both inject prompts at the same depth). Otherwise return an empty array.',
 ].join('\n');
 
@@ -731,12 +767,76 @@ export function buildReviewPrompt(findings, customPrompt = '') {
     return { system, user };
 }
 
+/**
+ * Pulls the JSON object out of a model reply. Handles code fences, thinking tags, trailing commas
+ * and replies cut off by the token limit (keeps every finding that was complete). Exported for testing.
+ */
 export function parseJsonLoose(text) {
-    const t = String(text || '').replace(/```(?:json)?/gi, '');
+    let t = String(text || '')
+        .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/```(?:json)?/gi, '');
     const a = t.indexOf('{');
+    if (a < 0) throw new Error('AI 응답에서 JSON을 찾지 못했어요.');
+    t = t.slice(a);
+    const tryParse = (str) => {
+        try {
+            return JSON.parse(str.replace(/,\s*([}\]])/g, '$1'));
+        } catch {
+            return undefined;
+        }
+    };
     const b = t.lastIndexOf('}');
-    if (a < 0 || b <= a) throw new Error('AI 응답에서 JSON을 찾지 못했어요.');
-    return JSON.parse(t.slice(a, b + 1));
+    const whole = b > 0 ? tryParse(t.slice(0, b + 1)) : undefined;
+    if (whole) return whole;
+
+    // Repair: remember every point where an object/array closed, then close what is still open
+    const cuts = [];
+    const stack = [];
+    let inStr = false;
+    let escNext = false;
+    for (let i = 0; i < t.length; i++) {
+        const c = t[i];
+        if (inStr) {
+            if (escNext) escNext = false;
+            else if (c === '\\') escNext = true;
+            else if (c === '"') inStr = false;
+            continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === '{' || c === '[') stack.push(c === '{' ? '}' : ']');
+        else if (c === '}' || c === ']') {
+            stack.pop();
+            cuts.push({ end: i + 1, closers: stack.slice().reverse().join('') });
+            if (!stack.length) break;
+        }
+    }
+    for (let k = cuts.length - 1; k >= 0 && k >= cuts.length - 200; k--) {
+        const r = tryParse(t.slice(0, cuts[k].end) + cuts[k].closers);
+        if (r && (Array.isArray(r.findings) || r.summary || r.extra)) {
+            r.truncated = true;
+            return r;
+        }
+    }
+    throw new Error('AI 응답이 중간에 잘렸거나 형식이 달라요. 설정에서 최대 응답 토큰을 늘려 보세요.');
+}
+
+/** Accepts "F1", "f1", "1" and object-shaped findings. */
+export function normalizeReview(result) {
+    let list = result?.findings;
+    if (list && !Array.isArray(list) && typeof list === 'object') {
+        list = Object.entries(list).map(([id, v]) => ({ id, ...(typeof v === 'object' ? v : { verdict: v }) }));
+    }
+    const verdictMap = { real: 'real', likely: 'likely', unlikely: 'unlikely', false_positive: 'false_positive', falsepositive: 'false_positive', 'false positive': 'false_positive' };
+    return {
+        findings: (Array.isArray(list) ? list : []).map(f => ({
+            ...f,
+            id: /^\d+$/.test(String(f.id ?? '').trim()) ? `F${String(f.id).trim()}` : String(f.id ?? '').trim().toUpperCase(),
+            verdict: verdictMap[String(f.verdict || '').toLowerCase().trim()] || 'likely',
+        })),
+        extra: Array.isArray(result?.extra) ? result.extra : [],
+        summary: typeof result?.summary === 'string' ? result.summary : '',
+        truncated: !!result?.truncated,
+    };
 }
 
 async function runAiReview(button) {
@@ -756,13 +856,16 @@ async function runAiReview(button) {
     const label = button.querySelector('span');
     const original = label?.textContent;
     aiBusy = true;
+    lastRaw = '';
     button.classList.add('disabled');
     if (label) label.textContent = 'AI가 코드를 읽는 중…';
 
     try {
         const { system, user } = buildReviewPrompt(findings, s.aiPrompt);
-        const raw = await callLLM(system, user, s.aiMaxTokens || 3000, s.aiProfileId, s.aiUsePreset);
-        const result = parseJsonLoose(raw);
+        const raw = await callLLM(system, user, s.aiMaxTokens || 8000, s.aiProfileId, s.aiUsePreset);
+        if (!String(raw || '').trim()) throw new Error('AI가 빈 답을 보냈어요. 추론 모델이면 설정에서 최대 응답 토큰을 늘려 보세요.');
+        lastRaw = String(raw);
+        const result = normalizeReview(parseJsonLoose(raw));
         const scope = button.closest('.ecc-report') || document;
 
         let real = 0;
@@ -779,13 +882,15 @@ async function runAiReview(button) {
         const extra = (result.extra || []).map(e => `<div class="ecc-item ecc-caution"><div class="ecc-item-head"><span class="ecc-badge">AI 발견</span><b>${esc(e.title)}</b></div>
             <div class="ecc-pair">${esc(e.extensions)}</div><div>${esc(e.explanation)}</div>${e.fix ? `<div class="ecc-ai-fix">해결: ${esc(e.fix)}</div>` : ''}</div>`).join('');
         if (out) {
-            out.innerHTML = `<div class="ecc-ai-summary"><b>AI 결론</b> · 실제 문제 가능성 ${real}건 / 검토 ${findings.length}건<br>${esc(result.summary || '')}</div>${extra}`;
+            const missing = findings.length - (result.findings || []).length;
+            out.innerHTML = `<div class="ecc-ai-summary"><b>AI 결론</b> · 실제 문제 가능성 ${real}건 / 검토 ${findings.length}건<br>${esc(result.summary || '')}${missing > 0 ? `<br><small>${result.truncated ? '답이 중간에 잘려서 ' : ''}${missing}건은 판정을 못 받았어요.${result.truncated ? ' 설정에서 최대 응답 토큰을 늘리면 돼요.' : ''}</small>` : ''}</div>${extra}`;
         }
         if (label) label.textContent = 'AI 검토 완료 (다시 검토)';
     } catch (err) {
         console.error(LOG, 'AI review failed', err);
-        const msg = err?.cause?.message || err?.message || String(err);
-        if (out) out.innerHTML = `<div class="ecc-ai-summary ecc-danger">AI 검토 실패: ${esc(msg)}</div>`;
+        let msg = err?.cause?.message || err?.message || String(err);
+        if (/No message generated/i.test(msg)) msg = 'AI가 빈 답을 보냈어요. 추론 모델이면 설정에서 최대 응답 토큰을 늘리거나, 다른 연결 프로필을 골라 보세요.';
+        if (out) out.innerHTML = `<div class="ecc-ai-summary ecc-danger">AI 검토 실패: ${esc(msg)}${lastRaw ? `<details><summary>AI가 보낸 답 보기</summary><pre class="ecc-raw">${esc(lastRaw.slice(0, 4000))}</pre></details>` : ''}</div>`;
         if (label) label.textContent = original;
         toastr.error(msg, 'AI 검토 실패');
     } finally {
@@ -947,7 +1052,7 @@ function createSettingsUI() {
     const max = document.getElementById('ecc_ai_max');
     max.value = s.aiMaxTokens;
     max.addEventListener('change', () => {
-        s.aiMaxTokens = Math.min(16000, Math.max(500, parseInt(max.value) || 3000));
+        s.aiMaxTokens = Math.min(16000, Math.max(500, parseInt(max.value) || 8000));
         max.value = s.aiMaxTokens;
         saveSettingsDebounced();
     });
